@@ -312,7 +312,7 @@ if __name__=='__main__':
                         required=False, default=None)
     parser.add_argument('-profile', '--profile', help="Turn on profiling", action='store_true', default=False)
     parser.add_argument('-m', '--modeldir', help='directory for saving model', required=False, default=None)
-    parser.add_argument('-tensorboard_logdir', '--tensorboard_logdir', help='Directory where TensorBoard logs should be created', required=False, default=None)
+    parser.add_argument('-tensorboard_logdir', '--tensorboard_logdir', help='Directory where TensorBoard logs should be created', required=False, default='.')
 
     args = vars(parser.parse_args())
     epochs = int(args['epochs'])
@@ -344,4 +344,4 @@ if __name__=='__main__':
                    epoch_size,
                    max_epochs=epochs,
                    log_file=args['logfile'],
-                   tboard_log_dir=args['profile'])
+                   tboard_log_dir=args['tensorboard_logdir'])

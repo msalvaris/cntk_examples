@@ -139,6 +139,6 @@ if __name__=="__main__":
     train_path = os.path.join(args['datadir'], 'train')
     test_path = os.path.join(args['datadir'], 'test')
     saveTrainImages(train_path,
-                    map_filename=os.path.join(train_path, 'train_map.txt'),
-                    mean_filename=os.path.join(train_path, 'CIFAR-10_mean.xml'))
-    saveTestImages(test_path, os.path.join(test_path, 'test_map.txt'))
+                    map_filename=os.path.join(args['datadir'], 'train_map.txt'),
+                    mean_filename=os.path.join(args['datadir'], 'CIFAR-10_mean.xml'))
+    saveTestImages(test_path, os.path.join(args['datadir'], 'test_map.txt'))

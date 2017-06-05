@@ -6,7 +6,10 @@
 
 
 from __future__ import print_function
-try: 
+
+import argparse
+
+try:
     from urllib.request import urlretrieve 
 except ImportError: 
     from urllib import urlretrieve
@@ -126,7 +129,10 @@ def saveTestImages(topath, filename='test_map.txt', frompath='cifar-10-batches-p
             mapFile.write("%s\t%d\n" % (fname, label))
 
 
+
 if __name__=="__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--datadir', required=True)
     fname = download_data(CIFAR_URL)
     extract(fname)
     saveTrainImages('train')

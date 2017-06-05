@@ -1,3 +1,10 @@
+# Copyright (c) Microsoft. All rights reserved.
+
+# Licensed under the MIT license. See LICENSE.md file in the project root
+# for full license information.
+# ==============================================================================
+
+
 from __future__ import print_function
 try: 
     from urllib.request import urlretrieve 
@@ -5,16 +12,12 @@ except ImportError:
     from urllib import urlretrieve
 import sys
 import tarfile
-import shutil
 import os
-import struct
 import numpy as np
 import pickle as cp
 from PIL import Image
 import xml.etree.cElementTree as et
 import xml.dom.minidom
-import getopt
-from tqdm import tqdm
 from itertools import product, count
 
 IMGSIZE = 32
@@ -91,7 +94,7 @@ def read_test_batch(frompath):
 def read_batch(filename):    
     with open(filename, 'rb') as f:
         labels, data = load_data_file(f)
-        for i in tqdm(range(len(labels))): 
+        for i in range(len(labels)):
             yield labels[i], data[i, :].reshape((3, IMGSIZE, IMGSIZE))
 
 

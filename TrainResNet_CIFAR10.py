@@ -231,7 +231,7 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
 
     cntk.training_session(
         trainer=trainer,
-        b_source=train_source,
+        mb_source=train_source,
         mb_size=minibatch_size,
         model_inputs_to_streams=input_map,
         checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(model_path, model_name), restore=restore),

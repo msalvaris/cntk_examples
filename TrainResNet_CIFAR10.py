@@ -289,7 +289,8 @@ def resnet_cifar10(train_source,
         num_epochs=max_epochs)
 
     tensorboard_writer = TensorBoardProgressWriter(freq=10,
-                                                   log_dir=tboard_log_dir)
+                                                   log_dir=tboard_log_dir,
+                                                   model=network['output'])
     trainer = create_trainer(network, minibatch_size, epoch_size, [progress_printer, tensorboard_writer])
     train_and_test(network, trainer, train_source, test_source, minibatch_size, epoch_size, restore=False)
 

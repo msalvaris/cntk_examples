@@ -14,7 +14,6 @@ from cntk.metrics import classification_error
 from cntk import learners, io, logging, layers, Trainer, learning_rate_schedule, reduce_mean
 import _cntk_py
 import cntk
-import fire
 from uuid import uuid4
 from toolz import pipe
 import json
@@ -64,7 +63,7 @@ def create_reader(path, is_training, input_dim, label_dim):
     )), randomize=is_training, max_sweeps = io.INFINITELY_REPEAT if is_training else 1)
 
 
-# Creates and trains a feedforward classification model for MNIST images
+
 def convnet_cifar10(num_convolution_layers=2, minibatch_size=64, max_epochs=30, logdir=None, debug_output=False):
     _cntk_py.set_computation_network_trace_level(0)
 

@@ -5,24 +5,54 @@
 # ==============================================================================
 
 from __future__ import print_function
-import numpy as np
-import sys
+
+import _cntk_py
+import json
+import logging
 import os
-from cntk.ops import minus, element_times, constant, relu
+from uuid import uuid4
+
+import cntk
+import cntk.io.transforms as xforms
+import numpy as np
+from cntk import io, layers, Trainer, learning_rate_schedule, momentum_as_time_constant_schedule, momentum_sgd, UnitType
+from cntk.io import MinibatchSource, ImageDeserializer, StreamDef, StreamDefs
+from cntk.logging import ProgressPrinter, TensorBoardProgressWriter
 from cntk.losses import cross_entropy_with_softmax
 from cntk.metrics import classification_error
-from cntk import learners, io, logging, layers, Trainer, learning_rate_schedule, reduce_mean
-import _cntk_py
-import cntk
-from uuid import uuid4
+from cntk.ops import minus, element_times, constant, relu
 from toolz import pipe
-import json
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-# Paths relative to current python file.
-abs_path   = os.getcwd()
-data_path  = abs_path
-model_path = os.path.join(abs_path, "Models")
+_ABS_PATH   = os.getcwd()
+_MODEL_PATH = os.path.join(_ABS_PATH, "Models")
+
+# model dimensions
+_IMAGE_HEIGHT = 32
+_IMAGE_WIDTH  = 32
+_NUM_CHANNELS = 3  # RGB
+_NUM_CLASSES  = 10
+_MODEL_NAME   = "ResNet_CIFAR10_DataAug.model"
+_EPOCH_SIZE = 50000
+
+
+def process_map_file(map_file, imgfolder):
+    """ Convert map file format to one required by CNTK ImageDeserializer
+    """
+    logger.info('Processing {}...'.format(map_file))
+    orig_file = open(map_file, 'r')
+    map_path, map_name = os.path.split(map_file)
+    new_filename = os.path.join(map_path, 'p_{}'.format(map_name))
+    new_file = open(new_filename, 'w')
+    for line in orig_file:
+        fname, label = line.split('\t')
+        new_file.write("%s\t%s\n" % (os.path.join(imgfolder, fname), label.strip()))
+    orig_file.close()
+    new_file.close()
+    return new_filename
 
 
 def _create_env_variable_appender(env_var_name):
@@ -55,16 +85,134 @@ def _save_results(test_result, filename, **kwargs):
         json.dump(results_dict, outfile)
 
 
-# Define the reader for both training and evaluation action.
-def create_reader(path, is_training, input_dim, label_dim):
-    return io.MinibatchSource(io.CTFDeserializer(path, io.StreamDefs(
-        features  = io.StreamDef(field='features', shape=input_dim),
-        labels    = io.StreamDef(field='labels',   shape=label_dim)
-    )), randomize=is_training, max_sweeps = io.INFINITELY_REPEAT if is_training else 1)
+def create_image_mb_source(map_file, mean_file, train, total_number_of_samples):
+    """ Creates minibatch source
+    """
+    if not os.path.exists(map_file) or not os.path.exists(mean_file):
+        raise RuntimeError(
+            "File '%s' or '%s' does not exist. " %
+            (map_file, mean_file))
+
+    # transformation pipeline for the features has jitter/crop only when training
+    transforms = []
+    if train:
+        imgfolder = os.path.join(os.path.split(map_file)[0], 'train')
+        transforms += [
+            xforms.crop(crop_type='randomside', side_ratio=0.8, jitter_type='uniratio')  # train uses jitter
+        ]
+    else:
+        imgfolder = os.path.join(os.path.split(map_file)[0], 'test')
+
+    transforms += [
+        xforms.scale(width=_IMAGE_WIDTH, height=_IMAGE_HEIGHT, channels=_NUM_CHANNELS, interpolations='linear'),
+        xforms.mean(mean_file)
+    ]
+
+    map_file = process_map_file(map_file, imgfolder)
+
+    # deserializer
+    return MinibatchSource(
+        ImageDeserializer(map_file, StreamDefs(
+            features=StreamDef(field='image', transforms=transforms),
+            # first column in map file is referred to as 'image'
+            labels=StreamDef(field='label', shape=_NUM_CLASSES))),  # and second as 'label'
+        randomize=train,
+        max_samples=total_number_of_samples,
+        multithreaded_deserializer=True)
+
+
+def create_network(num_convolution_layers):
+    """ Create network
+
+    """
+    # Input variables denoting the features and label data
+    input_var = cntk.input_variable((_NUM_CHANNELS, _IMAGE_HEIGHT, _IMAGE_WIDTH))
+    label_var = cntk.input_variable((_NUM_CLASSES))
+
+    # create model, and configure learning parameters
+    # Instantiate the feedforward classification model
+    input_removemean = minus(input_var, constant(128))
+    scaled_input = element_times(constant(0.00390625), input_removemean)
+
+    print('Creating NN model')
+    with layers.default_options(activation=relu, pad=True):
+        model = layers.Sequential([
+            layers.For(range(num_convolution_layers), lambda: [
+                layers.Convolution2D((3, 3), 64),
+                layers.Convolution2D((3, 3), 64),
+                layers.MaxPooling((3, 3), (2, 2))
+            ]),
+            layers.For(range(2), lambda i: [
+                layers.Dense([256, 128][i]),
+                layers.Dropout(0.5)
+            ]),
+            layers.Dense(_NUM_CLASSES, activation=None)
+        ])(scaled_input)
+
+    # loss and metric
+    ce = cross_entropy_with_softmax(model, label_var)
+    pe = classification_error(model, label_var)
+
+    return {
+        'name': 'convnet',
+        'feature': input_var,
+        'label': label_var,
+        'ce': ce,
+        'pe': pe,
+        'output': model
+    }
+
+
+def train_and_test(network, trainer, train_source, test_source, minibatch_size, epoch_size, restore,
+                   model_path=_MODEL_PATH):
+    """ Train and test
+
+    """
+    # define mapping from intput streams to network inputs
+    input_map = {
+        network['feature']: train_source.streams.features,
+        network['label']: train_source.streams.labels
+    }
+
+    cntk.training_session(
+        trainer=trainer,
+        mb_source=train_source,
+        mb_size=minibatch_size,
+        model_inputs_to_streams=input_map,
+        checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(model_path, _MODEL_NAME), restore=restore),
+        progress_frequency=epoch_size,
+        test_config=cntk.TestConfig(source=test_source, mb_size=16)
+    ).train()
+
+
+def create_trainer(network, minibatch_size, epoch_size, progress_printer):
+    """ Create trainer 
+    """
+    if network['name'] == 'resnet20':
+        lr_per_mb = [1.0] * 80 + [0.1] * 40 + [0.01]
+    elif network['name'] == 'resnet110':
+        lr_per_mb = [0.1] * 1 + [1.0] * 80 + [0.1] * 40 + [0.01]
+    else:
+        return RuntimeError("Unknown model name!")
+
+    momentum_time_constant = -minibatch_size / np.log(0.9)
+    l2_reg_weight = 0.0001
+
+    # Set learning parameters
+    lr_per_sample = [lr / minibatch_size for lr in lr_per_mb]
+    lr_schedule = learning_rate_schedule(lr_per_sample, epoch_size=epoch_size, unit=UnitType.sample)
+    mm_schedule = momentum_as_time_constant_schedule(momentum_time_constant)
+
+    learner = momentum_sgd(network['output'].parameters,
+                           lr_schedule,
+                           mm_schedule,
+                           l2_regularization_weight=l2_reg_weight)
+
+    return Trainer(network['output'], (network['ce'], network['pe']), learner, progress_printer)
 
 
 
-def convnet_cifar10(num_convolution_layers=2, minibatch_size=64, max_epochs=30, logdir=None, debug_output=False):
+def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolution_layers=2, minibatch_size=64, max_epochs=30, log_file=None, tboard_log_dir='.'):
     _cntk_py.set_computation_network_trace_level(0)
 
     print("""Running network with: 
@@ -75,131 +223,72 @@ def convnet_cifar10(num_convolution_layers=2, minibatch_size=64, max_epochs=30, 
                     minibatch_size=minibatch_size,
                     max_epochs=max_epochs
                 ))
-    
-    image_height = 32
-    image_width  = 32
-    num_channels = 3
-    input_dim = image_height * image_width * num_channels
-    num_output_classes = 10
 
-    print('Setting up input variables')
-    # Input variables denoting the features and label data
-    input_var = cntk.ops.input((num_channels, image_height, image_width), np.float32)
-    label_var = cntk.ops.input(num_output_classes, np.float32)
 
-    # Instantiate the feedforward classification model
-    input_removemean = minus(input_var, constant(128))
-    scaled_input = element_times(constant(0.00390625), input_removemean)
+    progress_printer = ProgressPrinter(
+        tag='Training',
+        log_to_file=log_file,
+        rank=cntk.Communicator.rank(),
+        num_epochs=max_epochs)
 
-    print('Creating NN model')
-    with layers.default_options(activation=relu, pad=True): 
-        model = layers.Sequential([
-            layers.For(range(num_convolution_layers), lambda : [
-                layers.Convolution2D((3,3), 64), 
-                layers.Convolution2D((3,3), 64), 
-                layers.MaxPooling((3,3), (2,2))
-            ]), 
-            layers.For(range(2), lambda i: [
-                layers.Dense([256,128][i]), 
-                layers.Dropout(0.5)
-            ]), 
-            layers.Dense(num_output_classes, activation=None)
-        ])(scaled_input)
-    
-    ce = cross_entropy_with_softmax(model, label_var)
-    pe = classification_error(model, label_var)
+    tensorboard_writer = TensorBoardProgressWriter(freq=10,
+                                                   log_dir=tboard_log_dir,
+                                                   model=network['output'])
+    trainer = create_trainer(network, minibatch_size, epoch_size, [progress_printer, tensorboard_writer])
+    train_and_test(network, trainer, train_source, test_source, minibatch_size, epoch_size, restore=False)
 
-    reader_train = create_reader(os.path.join(data_path, 'Train_cntk_text.txt'), True, input_dim, num_output_classes)
-
-    # training config
-    epoch_size = 50000                  # for now we manually specify epoch size
-    
-    # Set learning parameters
-    lr_per_sample          = [0.0015625]*10 + [0.00046875]*10 + [0.00015625]
-    lr_schedule            = learning_rate_schedule(lr_per_sample, learners.UnitType.sample, epoch_size)
-    mm_time_constant       = [0]*20 + [-minibatch_size/np.log(0.9)]
-    mm_schedule            = learners.momentum_as_time_constant_schedule(mm_time_constant, epoch_size)
-    l2_reg_weight          = 0.002
-
-    # Instantiate the trainer object to drive the model training
-    learner = learners.momentum_sgd(model.parameters, lr_schedule, mm_schedule,
-                                        l2_regularization_weight = l2_reg_weight)
-     # progress writers
-    progress_printer = [logging.ProgressPrinter(tag='Training', num_epochs=max_epochs)]
-    tensorboard_writer=None
-    if logdir is not None:
-        tensorboard_writer = logging.TensorBoardProgressWriter(freq=10, log_dir=logdir, model=model)
-        progress_printer.append(tensorboard_writer)
-
-    trainer = Trainer(model, (ce, pe), learner, progress_printer)
-
-    # define mapping from reader streams to network inputs
-    input_map = {
-        input_var  : reader_train.streams.features,
-        label_var  : reader_train.streams.labels
-    }
-
-    logging.log_number_of_parameters(model)
-
-    print('Starting training')
-    # Get minibatches of images to train with and perform model training
-    for epoch in range(max_epochs):       # loop over epochs
-        sample_count = 0
-        while sample_count < epoch_size:  # loop over minibatches in the epoch
-            data = reader_train.next_minibatch(min(minibatch_size, epoch_size - sample_count), input_map=input_map) # fetch minibatch.
-            trainer.train_minibatch(data)                                   # update model with it
-            sample_count += trainer.previous_minibatch_sample_count         # count samples processed so far
-
-        trainer.summarize_training_progress()
-        # Log mean of each parameter tensor, so that we can confirm that the parameters change indeed.
-        if tensorboard_writer:
-            for parameter in model.parameters:
-                tensorboard_writer.write_value(parameter.uid + "/mean", reduce_mean(parameter).eval(), epoch)
-    
-    # Load test data
-    reader_test = create_reader(os.path.join(data_path, 'Test_cntk_text.txt'), False, input_dim, num_output_classes)
-
-    input_map = {
-        input_var  : reader_test.streams.features,
-        label_var  : reader_test.streams.labels
-    }
-
-    # Test data for trained model
-    epoch_size = 10000
-    test_minibatch_size = 16
-
-    # process minibatches and evaluate the model
-    metric_numer    = 0
-    metric_denom    = 0
-    sample_count    = 0
-    minibatch_index = 0
-
-    print('Starting testing')
-    while sample_count < epoch_size:
-        current_minibatch = min(test_minibatch_size, epoch_size - sample_count)
-        # Fetch next test min batch.
-        data = reader_test.next_minibatch(current_minibatch, input_map=input_map)
-        # minibatch data to be trained with
-        metric_numer += trainer.test_minibatch(data) * current_minibatch
-        metric_denom += current_minibatch
-        # Keep track of the number of samples processed so far.
-        sample_count += data[label_var].num_samples
-        minibatch_index += 1
-
-    print("")
-    print("Final Results: Minibatch[1-{}]: errs = {:0.2f}% * {}".format(minibatch_index+1, (metric_numer*100.0)/metric_denom, metric_denom))
-    print("")
-
-    # Save model and results
-    unique_path = os.path.join(model_path, _get_unique_id())
-    model.save(os.path.join(unique_path, "ConvNet_CIFAR10_model.dnn"))
-    _save_results((metric_numer*100.0)/metric_denom,
-                  os.path.join(unique_path, "model_results.json"),
-                  num_convolution_layers=num_convolution_layers, 
-                  minibatch_size=minibatch_size, 
-                  max_epochs=max_epochs)
+    # print("")
+    # print("Final Results: Minibatch[1-{}]: errs = {:0.2f}% * {}".format(minibatch_index+1, (metric_numer*100.0)/metric_denom, metric_denom))
+    # print("")
+    #
+    # # Save model and results
+    # unique_path = os.path.join(model_path, _get_unique_id())
+    # model.save(os.path.join(unique_path, "ConvNet_CIFAR10_model.dnn"))
+    # _save_results((metric_numer*100.0)/metric_denom,
+    #               os.path.join(unique_path, "model_results.json"),
+    #               num_convolution_layers=num_convolution_layers,
+    #               minibatch_size=minibatch_size,
+    #               max_epochs=max_epochs)
 
     
 if __name__=='__main__':
-    fire.Fire(convnet_cifar10)
+    _cntk_py.set_computation_network_trace_level(0)
+    epochs=5
+    data_path='/root/data'
+    model_path = ''
+    progress_printer = ProgressPrinter(
+        tag='Training',
+        log_to_file=None,
+        rank=cntk.Communicator.rank(),
+        num_epochs=epochs)
+
+    train_source = create_image_mb_source(os.path.join(data_path, 'train_map.txt'),
+                                          os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                          train=True,
+                                          total_number_of_samples=epochs * _EPOCH_SIZE)
+
+    test_source = create_image_mb_source(os.path.join(data_path, 'test_map.txt'),
+                                         os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                         train=False,
+                                         total_number_of_samples=cntk.io.FULL_DATA_SWEEP)
+
+    network = create_network(3)
+    minibatch_size=128
+    trainer = create_trainer(network, minibatch_size, _EPOCH_SIZE, [progress_printer])
+    input_map = {
+        network['feature']: train_source.streams.features,
+        network['label']: train_source.streams.labels
+    }
+
+    tr_session = cntk.training_session(
+        trainer=trainer,
+        mb_source=train_source,
+        mb_size=minibatch_size,
+        model_inputs_to_streams=input_map,
+        checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(_MODEL_PATH, _MODEL_NAME), restore=False),
+        progress_frequency=_EPOCH_SIZE,
+        test_config=cntk.TestConfig(source=test_source, mb_size=16)
+    )
+    tr_session.train()
+
 

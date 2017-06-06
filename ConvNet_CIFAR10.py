@@ -191,12 +191,12 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
 def create_trainer(network, minibatch_size, epoch_size, progress_printer):
     """ Create trainer 
     """
-    lr_per_mb = [1.0] * 80 + [0.1] * 40 + [0.01]
-    momentum_time_constant = -minibatch_size / np.log(0.9)
-    l2_reg_weight = 0.0001
 
     # Set learning parameters
-    lr_per_sample = [lr / minibatch_size for lr in lr_per_mb]
+    lr_per_sample = [0.0015625] * 10 + [0.00046875] * 10 + [0.00015625]
+    momentum_time_constant = [0] * 20 + [-minibatch_size / np.log(0.9)]
+    l2_reg_weight = 0.002
+
     lr_schedule = learning_rate_schedule(lr_per_sample, epoch_size=epoch_size, unit=UnitType.sample)
     mm_schedule = momentum_as_time_constant_schedule(momentum_time_constant)
 

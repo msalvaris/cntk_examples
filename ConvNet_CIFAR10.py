@@ -276,6 +276,7 @@ def create_results_callback(filename, **kwargs):
     def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
         _save_results(average_error, filename, **kwargs)
         return False
+    return simple_callback
 
 
 if __name__=='__main__':

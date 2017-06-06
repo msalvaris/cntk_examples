@@ -7,6 +7,7 @@
 from __future__ import print_function
 
 import _cntk_py
+import argparse
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ _IMAGE_HEIGHT = 32
 _IMAGE_WIDTH  = 32
 _NUM_CHANNELS = 3  # RGB
 _NUM_CLASSES  = 10
-_MODEL_NAME   = "ResNet_CIFAR10_DataAug.model"
+_MODEL_NAME   = "ConvNet_CIFAR10_model.dnn"
 _EPOCH_SIZE = 50000
 
 
@@ -82,6 +83,7 @@ def _get_unique_id():
 
 def _save_results(test_result, filename, **kwargs):
     results_dict = {'test_metric':test_result, 'parameters': kwargs}
+    logger.info('Saving results {}'.format(results_dict))
     with open(filename, 'w') as outfile:
         json.dump(results_dict, outfile)
 
@@ -165,7 +167,7 @@ def create_network(num_convolution_layers):
 
 
 def train_and_test(network, trainer, train_source, test_source, minibatch_size, epoch_size, restore,
-                   model_path=_MODEL_PATH):
+                   model_path=_MODEL_PATH, cv_config=None):
     """ Train and test
 
     """
@@ -182,7 +184,7 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
         model_inputs_to_streams=input_map,
         checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(model_path, _MODEL_NAME), restore=restore),
         progress_frequency=epoch_size,
-        test_config=cntk.TestConfig(source=test_source, mb_size=16)
+        cv_config=cv_config
     ).train()
 
 
@@ -206,8 +208,15 @@ def create_trainer(network, minibatch_size, epoch_size, progress_printer):
     return Trainer(network['output'], (network['ce'], network['pe']), learner, progress_printer)
 
 
-
-def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolution_layers=2, minibatch_size=64, max_epochs=30, log_file=None, tboard_log_dir='.'):
+def convnet_cifar10(train_source,
+                    test_source,
+                    epoch_size,
+                    num_convolution_layers=2,
+                    minibatch_size=64,
+                    max_epochs=30,
+                    log_file=None,
+                    tboard_log_dir='.',
+                    results_path=_MODEL_PATH):
     _cntk_py.set_computation_network_trace_level(0)
 
     print("""Running network with: 
@@ -219,6 +228,7 @@ def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolut
                     max_epochs=max_epochs
                 ))
 
+    network = create_network(num_convolution_layers)
 
     progress_printer = ProgressPrinter(
         tag='Training',
@@ -230,7 +240,24 @@ def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolut
                                                    log_dir=tboard_log_dir,
                                                    model=network['output'])
     trainer = create_trainer(network, minibatch_size, epoch_size, [progress_printer, tensorboard_writer])
-    train_and_test(network, trainer, train_source, test_source, minibatch_size, epoch_size, restore=False)
+
+    cv_config = CrossValidationConfig(minibatch_source=test_source,
+                                      minibatch_size=16,
+                                      callback=create_results_callback(os.path.join(results_path, "model_results.json"),
+                                                                       num_convolution_layers=num_convolution_layers,
+                                                                       minibatch_size=minibatch_size,
+                                                                       max_epochs=max_epochs))
+    train_and_test(network,
+                   trainer,
+                   train_source,
+                   test_source,
+                   minibatch_size,
+                   epoch_size,
+                   restore=False,
+                   cv_config=cv_config)
+    network['output'].save(os.path.join(results_path, _MODEL_NAME))
+
+
 
     # print("")
     # print("Final Results: Minibatch[1-{}]: errs = {:0.2f}% * {}".format(minibatch_index+1, (metric_numer*100.0)/metric_denom, metric_denom))
@@ -245,52 +272,70 @@ def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolut
     #               minibatch_size=minibatch_size,
     #               max_epochs=max_epochs)
 
-def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
-    print(index, average_error, cv_num_samples, cv_num_minibatches)
-    return False
+def create_results_callback(filename, **kwargs):
+    def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
+        _save_results(average_error, filename, **kwargs)
+        return False
 
 
-# if __name__=='__main__':
-_cntk_py.set_computation_network_trace_level(0)
-epochs=5
-data_path='/root/data'
-model_path = ''
-progress_printer = ProgressPrinter(
-    tag='Training',
-    log_to_file=None,
-    rank=cntk.Communicator.rank(),
-    num_epochs=epochs)
+if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--datadir',
+                        help='Data directory where the CIFAR dataset is located',
+                        required=True)
+    parser.add_argument('-m', '--modeldir',
+                        help='directory for saving model',
+                        required=False,
+                        default=_MODEL_PATH)
+    parser.add_argument('-logfile', '--logfile', help='Log file', required=False, default=None)
+    parser.add_argument('-tensorboard_logdir', '--tensorboard_logdir',
+                        help='Directory where TensorBoard logs should be created',
+                        required=False,
+                        default='.')
+    parser.add_argument('-e', '--max_epochs',
+                        help='Total number of epochs to train',
+                        type=int,
+                        required=False,
+                        default='20')
+    parser.add_argument('--num_convolution_layers',
+                        help='Number of convolution layers',
+                        type=int,
+                        required=False,
+                        default='2')
+    parser.add_argument('--minibatch_size',
+                        help='Number of examples in each minibatch',
+                        type=int,
+                        required=False,
+                        default='64')
 
-train_source = create_image_mb_source(os.path.join(data_path, 'train_map.txt'),
-                                      os.path.join(data_path, 'CIFAR-10_mean.xml'),
-                                      train=True,
-                                      total_number_of_samples=epochs * _EPOCH_SIZE)
+    args = vars(parser.parse_args())
+    epochs = int(args['max_epochs'])
+    model_path = args['modeldir']
 
-test_source = create_image_mb_source(os.path.join(data_path, 'test_map.txt'),
-                                     os.path.join(data_path, 'CIFAR-10_mean.xml'),
-                                     train=False,
-                                     total_number_of_samples=cntk.io.FULL_DATA_SWEEP)
+    data_path = args['datadir']
+    if not os.path.exists(data_path):
+        raise RuntimeError("Folder %s does not exist" % data_path)
 
-network = create_network(3)
-minibatch_size=128
-trainer = create_trainer(network, minibatch_size, _EPOCH_SIZE, [progress_printer])
-input_map = {
-    network['feature']: train_source.streams.features,
-    network['label']: train_source.streams.labels
-}
+    train_source = create_image_mb_source(os.path.join(data_path, 'train_map.txt'),
+                                          os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                          train=True,
+                                          total_number_of_samples=epochs * _EPOCH_SIZE)
 
-cv_config = CrossValidationConfig(minibatch_source=test_source, minibatch_size=16, callback=simple_callback)
+    test_source = create_image_mb_source(os.path.join(data_path, 'test_map.txt'),
+                                         os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                         train=False,
+                                         total_number_of_samples=cntk.io.FULL_DATA_SWEEP)
 
-tr_session = cntk.training_session(
-    trainer=trainer,
-    mb_source=train_source,
-    mb_size=minibatch_size,
-    model_inputs_to_streams=input_map,
-    checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(_MODEL_PATH, _MODEL_NAME), restore=False),
-    progress_frequency=_EPOCH_SIZE,
-    test_config=cntk.TestConfig(source=test_source, mb_size=16),
-    cv_config = cv_config
-)
-# tr_session.train()
+
+    unique_path = os.path.join(model_path, _get_unique_id())
+    convnet_cifar10(train_source,
+                    test_source,
+                    _EPOCH_SIZE,
+                    num_convolution_layers=args['num_convolution_layers'],
+                    minibatch_size=args['minibatch_size'],
+                    max_epochs=args['max_epochs'],
+                    log_file=None,
+                    tboard_log_dir='.',
+                    results_path=unique_path)
 
 

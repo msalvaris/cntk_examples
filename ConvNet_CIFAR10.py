@@ -188,13 +188,7 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
 def create_trainer(network, minibatch_size, epoch_size, progress_printer):
     """ Create trainer 
     """
-    if network['name'] == 'resnet20':
-        lr_per_mb = [1.0] * 80 + [0.1] * 40 + [0.01]
-    elif network['name'] == 'resnet110':
-        lr_per_mb = [0.1] * 1 + [1.0] * 80 + [0.1] * 40 + [0.01]
-    else:
-        return RuntimeError("Unknown model name!")
-
+    lr_per_mb = [1.0] * 80 + [0.1] * 40 + [0.01]
     momentum_time_constant = -minibatch_size / np.log(0.9)
     l2_reg_weight = 0.0001
 
@@ -251,44 +245,44 @@ def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolut
     #               max_epochs=max_epochs)
 
     
-if __name__=='__main__':
-    _cntk_py.set_computation_network_trace_level(0)
-    epochs=5
-    data_path='/root/data'
-    model_path = ''
-    progress_printer = ProgressPrinter(
-        tag='Training',
-        log_to_file=None,
-        rank=cntk.Communicator.rank(),
-        num_epochs=epochs)
+# if __name__=='__main__':
+_cntk_py.set_computation_network_trace_level(0)
+epochs=5
+data_path='/root/data'
+model_path = ''
+progress_printer = ProgressPrinter(
+    tag='Training',
+    log_to_file=None,
+    rank=cntk.Communicator.rank(),
+    num_epochs=epochs)
 
-    train_source = create_image_mb_source(os.path.join(data_path, 'train_map.txt'),
-                                          os.path.join(data_path, 'CIFAR-10_mean.xml'),
-                                          train=True,
-                                          total_number_of_samples=epochs * _EPOCH_SIZE)
+train_source = create_image_mb_source(os.path.join(data_path, 'train_map.txt'),
+                                      os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                      train=True,
+                                      total_number_of_samples=epochs * _EPOCH_SIZE)
 
-    test_source = create_image_mb_source(os.path.join(data_path, 'test_map.txt'),
-                                         os.path.join(data_path, 'CIFAR-10_mean.xml'),
-                                         train=False,
-                                         total_number_of_samples=cntk.io.FULL_DATA_SWEEP)
+test_source = create_image_mb_source(os.path.join(data_path, 'test_map.txt'),
+                                     os.path.join(data_path, 'CIFAR-10_mean.xml'),
+                                     train=False,
+                                     total_number_of_samples=cntk.io.FULL_DATA_SWEEP)
 
-    network = create_network(3)
-    minibatch_size=128
-    trainer = create_trainer(network, minibatch_size, _EPOCH_SIZE, [progress_printer])
-    input_map = {
-        network['feature']: train_source.streams.features,
-        network['label']: train_source.streams.labels
-    }
+network = create_network(3)
+minibatch_size=128
+trainer = create_trainer(network, minibatch_size, _EPOCH_SIZE, [progress_printer])
+input_map = {
+    network['feature']: train_source.streams.features,
+    network['label']: train_source.streams.labels
+}
 
-    tr_session = cntk.training_session(
-        trainer=trainer,
-        mb_source=train_source,
-        mb_size=minibatch_size,
-        model_inputs_to_streams=input_map,
-        checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(_MODEL_PATH, _MODEL_NAME), restore=False),
-        progress_frequency=_EPOCH_SIZE,
-        test_config=cntk.TestConfig(source=test_source, mb_size=16)
-    )
-    tr_session.train()
+tr_session = cntk.training_session(
+    trainer=trainer,
+    mb_source=train_source,
+    mb_size=minibatch_size,
+    model_inputs_to_streams=input_map,
+    checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(_MODEL_PATH, _MODEL_NAME), restore=False),
+    progress_frequency=_EPOCH_SIZE,
+    test_config=cntk.TestConfig(source=test_source, mb_size=16)
+)
+# tr_session.train()
 
 

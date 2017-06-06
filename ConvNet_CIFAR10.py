@@ -84,6 +84,10 @@ def _get_unique_id():
 def _save_results(test_result, filename, **kwargs):
     results_dict = {'test_metric':test_result, 'parameters': kwargs}
     logger.info('Saving results {}'.format(results_dict))
+
+    if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename))
+
     with open(filename, 'w') as outfile:
         json.dump(results_dict, outfile)
 

@@ -16,14 +16,13 @@ from uuid import uuid4
 import cntk
 import cntk.io.transforms as xforms
 import numpy as np
-from cntk import io, layers, Trainer, learning_rate_schedule, momentum_as_time_constant_schedule, momentum_sgd, \
+from cntk import layers, Trainer, learning_rate_schedule, momentum_as_time_constant_schedule, momentum_sgd, \
     UnitType, CrossValidationConfig
 from cntk.io import MinibatchSource, ImageDeserializer, StreamDef, StreamDefs
 from cntk.logging import ProgressPrinter, TensorBoardProgressWriter
 from cntk.losses import cross_entropy_with_softmax
 from cntk.metrics import classification_error
 from cntk.ops import minus, element_times, constant, relu
-from toolz import pipe
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,9 +75,7 @@ def _get_unique_id():
 
     If executed in a batch environment it will incorporate the job and task id
     """
-    return pipe(str(uuid4())[:8],
-                _append_task_id,
-                _append_job_id)
+    return _append_job_id(_append_task_id(str(uuid4())[:8]))
 
 
 def _save_results(test_result, filename, **kwargs):
@@ -212,6 +209,13 @@ def create_trainer(network, minibatch_size, epoch_size, progress_printer):
     return Trainer(network['output'], (network['ce'], network['pe']), learner, progress_printer)
 
 
+def create_results_callback(filename, **kwargs):
+    def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
+        _save_results(average_error, filename, **kwargs)
+        return False
+    return simple_callback
+
+
 def convnet_cifar10(train_source,
                     test_source,
                     epoch_size,
@@ -223,7 +227,7 @@ def convnet_cifar10(train_source,
                     results_path=_MODEL_PATH):
     _cntk_py.set_computation_network_trace_level(0)
 
-    print("""Running network with: 
+    logger.info("""Running network with: 
                 {num_convolution_layers} convolution layers
                 {minibatch_size}  minibatch size
                 for {max_epochs} epochs""".format(
@@ -239,7 +243,6 @@ def convnet_cifar10(train_source,
         log_to_file=log_file,
         rank=cntk.Communicator.rank(),
         num_epochs=max_epochs)
-
     tensorboard_writer = TensorBoardProgressWriter(freq=10,
                                                    log_dir=tboard_log_dir,
                                                    model=network['output'])
@@ -260,27 +263,6 @@ def convnet_cifar10(train_source,
                    restore=False,
                    cv_config=cv_config)
     network['output'].save(os.path.join(results_path, _MODEL_NAME))
-
-
-
-    # print("")
-    # print("Final Results: Minibatch[1-{}]: errs = {:0.2f}% * {}".format(minibatch_index+1, (metric_numer*100.0)/metric_denom, metric_denom))
-    # print("")
-    #
-    # # Save model and results
-    # unique_path = os.path.join(model_path, _get_unique_id())
-    # model.save(os.path.join(unique_path, "ConvNet_CIFAR10_model.dnn"))
-    # _save_results((metric_numer*100.0)/metric_denom,
-    #               os.path.join(unique_path, "model_results.json"),
-    #               num_convolution_layers=num_convolution_layers,
-    #               minibatch_size=minibatch_size,
-    #               max_epochs=max_epochs)
-
-def create_results_callback(filename, **kwargs):
-    def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
-        _save_results(average_error, filename, **kwargs)
-        return False
-    return simple_callback
 
 
 if __name__=='__main__':

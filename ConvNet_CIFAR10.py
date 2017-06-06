@@ -15,7 +15,8 @@ from uuid import uuid4
 import cntk
 import cntk.io.transforms as xforms
 import numpy as np
-from cntk import io, layers, Trainer, learning_rate_schedule, momentum_as_time_constant_schedule, momentum_sgd, UnitType
+from cntk import io, layers, Trainer, learning_rate_schedule, momentum_as_time_constant_schedule, momentum_sgd, \
+    UnitType, CrossValidationConfig
 from cntk.io import MinibatchSource, ImageDeserializer, StreamDef, StreamDefs
 from cntk.logging import ProgressPrinter, TensorBoardProgressWriter
 from cntk.losses import cross_entropy_with_softmax
@@ -244,7 +245,11 @@ def convnet_cifar10(network, train_source, test_source, epoch_size, num_convolut
     #               minibatch_size=minibatch_size,
     #               max_epochs=max_epochs)
 
-    
+def simple_callback(index, average_error, cv_num_samples, cv_num_minibatches):
+    print(index, average_error, cv_num_samples, cv_num_minibatches)
+    return False
+
+
 # if __name__=='__main__':
 _cntk_py.set_computation_network_trace_level(0)
 epochs=5
@@ -274,6 +279,8 @@ input_map = {
     network['label']: train_source.streams.labels
 }
 
+cv_config = CrossValidationConfig(minibatch_source=test_source, minibatch_size=16, callback=simple_callback)
+
 tr_session = cntk.training_session(
     trainer=trainer,
     mb_source=train_source,
@@ -281,7 +288,8 @@ tr_session = cntk.training_session(
     model_inputs_to_streams=input_map,
     checkpoint_config=cntk.CheckpointConfig(filename=os.path.join(_MODEL_PATH, _MODEL_NAME), restore=False),
     progress_frequency=_EPOCH_SIZE,
-    test_config=cntk.TestConfig(source=test_source, mb_size=16)
+    test_config=cntk.TestConfig(source=test_source, mb_size=16),
+    cv_config = cv_config
 )
 # tr_session.train()
 

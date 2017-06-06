@@ -247,7 +247,7 @@ if __name__=='__main__':
                         help='network type, resnet20 or resnet110',
                         required=False,
                         default='resnet20')
-    parser.add_argument('--datafolder',
+    parser.add_argument('--datadir',
                         help='Data directory where the CIFAR dataset is located',
                         required=True)
     parser.add_argument('-m', '--modeldir',
@@ -289,7 +289,7 @@ if __name__=='__main__':
     if not model_dir:
         model_dir = os.path.join(_ABS_PATH, "Models")
 
-    data_path = args['datafolder']
+    data_path = args['datadir']
     if not os.path.exists(data_path):
         raise RuntimeError("Folder %s does not exist" % data_path)
 
